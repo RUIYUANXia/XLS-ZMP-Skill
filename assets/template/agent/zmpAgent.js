@@ -27,7 +27,7 @@ async function normalizeConfig(config) {
     dryRun: Boolean(config.dryRun),
     loginWaitMs: Number(config.loginWaitMs || 12000),
     stepWaitMs: Number(config.stepWaitMs || 1200),
-    userDataDir: config.userDataDir || path.join(os.homedir(), ".zmp-timesheet-agent", "browser-profile")
+    userDataDir: config.userDataDir || path.join(os.homedir(), ".xls-zmp-timesheet-filler", "browser-profile")
   };
 }
 

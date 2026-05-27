@@ -1,5 +1,5 @@
 {
-  "name": "zmp-timesheet-agent",
+  "name": "xls-zmp-timesheet-filler",
   "version": "0.1.0",
   "private": true,
   "description": "Local UI and browser agent for ZMP timesheet filling.",

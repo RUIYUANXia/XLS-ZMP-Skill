@@ -1,9 +1,9 @@
 ---
-name: zmp-timesheet-agent
+name: xls-zmp-timesheet-filler
 description: Build, install, modify, troubleshoot, or operate a local browser automation agent for ZMP工时填报 / 项目任务管理. Use when the user asks for automatic ZMP timesheet filling by front-end date selection or conversational input, including natural-language requests like “帮我填写本月工时” that require China workday/holiday API lookup, Playwright automation for https://zmp.iwhalecloud.com/newZmp#/, 飞连一键登录 handling, 工时单日期范围 splitting, task-hour entry, 是否出差, per-date save, or auto-submit behavior.
 ---
 
-# ZMP Timesheet Agent
+# XLS ZMP Timesheet Filler
 
 Use this skill to create, tune, or operate a local ZMP timesheet filling tool. The skill includes a working template at `assets/template/`.
 
