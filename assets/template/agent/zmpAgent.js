@@ -29,32 +29,6 @@ async function normalizeConfig(config) {
   };
 }
 
-function parseRangeFromTitle(title, fallbackYear) {
-  const compact = title.match(/(\d{2})(\d{2})\s*[-~至]\s*(\d{2})(\d{2})/);
-  if (compact) {
-    const [, sm, sd, em, ed] = compact;
-    return {
-      start: `${fallbackYear}-${sm}-${sd}`,
-      end: `${fallbackYear}-${em}-${ed}`
-    };
-  }
-
-  const full = title.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2}).*?(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (full) {
-    const [, sy, sm, sd, ey, em, ed] = full;
-    return {
-      start: `${sy}-${sm.padStart(2, "0")}-${sd.padStart(2, "0")}`,
-      end: `${ey}-${em.padStart(2, "0")}-${ed.padStart(2, "0")}`
-    };
-  }
-
-  return null;
-}
-
-function dateInRange(date, range) {
-  return date >= range.start && date <= range.end;
-}
-
 function buildPlanFromNormalized(config, normalized) {
   const dates = normalized.selectedDates;
   const requestNote = normalized.requestedDates
@@ -369,8 +343,7 @@ async function readSheetRows(page) {
     visibleIndex: row.visibleIndex,
     occurrence: row.occurrence,
     orderNo: row.orderNo,
-    title: row.text,
-    range: parseRangeFromTitle(row.text, new Date().getFullYear())
+    title: row.text
   }));
 }
 
@@ -667,9 +640,7 @@ async function runZmpAutomation(rawConfig, log = () => {}) {
     for (const sheet of sheets) {
       if (!pendingDates.length) break;
 
-      const sheetName = sheet.range
-        ? `${sheet.range.start} 至 ${sheet.range.end}`
-        : sheet.title.slice(0, 80);
+      const sheetName = sheet.orderNo ? `工单号 ${sheet.orderNo}` : sheet.title.slice(0, 80);
       log(`处理工时单：${sheetName}。当前待填 ${pendingDates.length} 天：${pendingDates.join("、")}。`);
       await selectSheetByTitle(taskPage, sheet);
       const existing = await existingTimesheetDates(taskPage);
@@ -715,7 +686,7 @@ async function runZmpAutomation(rawConfig, log = () => {}) {
 
       if (filledThisSheet > 0) {
         if (filledThisSheet >= sheetDateCount) {
-          log("当前工时单已按总工时填满日期，执行自动提交。");
+          log("当前工时单已按总工时填满日期，执行提交。");
           await submitSheet(taskPage, log);
         } else {
           log(`当前工时单只填了 ${filledThisSheet}/${sheetDateCount} 个日期，暂不提交。`);
@@ -743,6 +714,5 @@ async function runZmpAutomation(rawConfig, log = () => {}) {
 
 module.exports = {
   buildPlan,
-  parseRangeFromTitle,
   runZmpAutomation
 };

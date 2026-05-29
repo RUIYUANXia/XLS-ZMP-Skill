@@ -1,6 +1,6 @@
 ---
 name: xls-zmp-timesheet-filler
-description: Build, install, modify, troubleshoot, or operate a local browser automation agent for ZMP工时填报 / 项目任务管理. Use when the user asks for automatic ZMP timesheet filling by front-end date selection or conversational input, including natural-language requests like “帮我填写本月工时” that require China workday/holiday API lookup, Playwright automation for https://zmp.iwhalecloud.com/newZmp#/, 飞连一键登录 handling, work-order total-hours allocation, task-hour entry, 是否出差, per-date save, or auto-submit behavior.
+description: Build, install, modify, troubleshoot, or operate a local browser automation agent for ZMP工时填报 / 项目任务管理. Use when the user asks for automatic ZMP timesheet filling by front-end date selection or conversational input, including natural-language requests like “帮我填写本月工时” that require China workday/holiday API lookup, Playwright automation for https://zmp.iwhalecloud.com/newZmp#/, 飞连一键登录 handling, work-order total-hours allocation, task-hour entry, 是否出差, per-date save, and fixed submit behavior.
 ---
 
 # XLS ZMP Timesheet Filler
@@ -141,7 +141,7 @@ Prefer these selectors and behaviors before inventing new ones:
 - Submission is fixed on: submit the current work order after it has received the number of dates computed from `总工时 / dailyHours`.
 - Each job should attempt browser automation only once. Do not retry automatically after login, navigation, selector, or fill failures.
 - After a job completes or fails, close the local HTTP server and release its port. Leave only a short delay for the CLI/frontend to read the final result.
-- Conversational mode should show a generated plan before execution, but execution defaults to real fill and auto-submit once the user confirms.
+- Conversational mode should show a generated plan before execution, but execution defaults to real fill and fixed submit behavior once the user confirms.
 - Do not create persistent config JSON files in the workspace for conversational runs. Use inline JSON, stdin, or an ephemeral temp file only if shell quoting makes inline JSON impractical.
 
 ## Tuning Workflow
