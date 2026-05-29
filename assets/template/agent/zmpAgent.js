@@ -23,11 +23,9 @@ async function normalizeConfig(config) {
     workDescription: config.workDescription || "日常维护支持",
     category: config.category || DEFAULT_CATEGORY,
     isTravel: Boolean(config.isTravel),
-    submitAfterEachSheet: config.submitAfterEachSheet !== false,
-    dryRun: Boolean(config.dryRun),
     loginWaitMs: Number(config.loginWaitMs || 12000),
     stepWaitMs: Number(config.stepWaitMs || 1200),
-    userDataDir: config.userDataDir || path.join(os.homedir(), ".xls-zmp-timesheet-filler", "browser-profile")
+    userDataDir: config.userDataDir || path.join(os.homedir(), ".zmp-timesheet-agent", "browser-profile")
   };
 }
 
@@ -70,8 +68,6 @@ function buildPlanFromNormalized(config, normalized) {
     category: normalized.category,
     workDescription: normalized.workDescription,
     isTravel: normalized.isTravel,
-    submitAfterEachSheet: normalized.submitAfterEachSheet,
-    dryRun: normalized.dryRun,
     loginWaitMs: normalized.loginWaitMs,
     stepWaitMs: normalized.stepWaitMs,
     requestText: config.requestText || config.text || config.prompt || "",
@@ -84,7 +80,8 @@ function buildPlanFromNormalized(config, normalized) {
       "进入 ZMP 后如出现“一键登录”，先点击并等待飞连登录完成。",
       "进入工作台后搜索“项目任务管理”，直接进入工时单填报页面。",
       "确认查询状态为“待我处理的”，必要时调整后查询。",
-      "逐张工时单按标题日期范围填写任务工时。"
+      "逐张工时单打开新增任务工时弹窗，按弹窗总工时计算可填天数。",
+      "用待填日期队列记录剩余日期，每保存或发现已有一条记录就更新一次。"
     ].filter(Boolean)
   };
 }
@@ -331,25 +328,81 @@ async function ensureWaitingQuery(page, log) {
 }
 
 async function readSheetRows(page) {
-  const rows = await page.locator("tr").evaluateAll(trs => trs.map((tr, index) => ({
-    index,
-    text: tr.innerText
-  })).filter(row => /\d{4,}|Waiting|0501|0515|\d{2}\d{2}\s*[-~至]\s*\d{2}\d{2}/.test(row.text)));
+  const rows = await page.locator("tr:visible").evaluateAll(trs => trs.map((tr, visibleIndex) => {
+    const text = (tr.innerText || "").replace(/\s+/g, " ").trim();
+    const cellTexts = Array.from(tr.querySelectorAll("td")).map(td => (td.innerText || "").replace(/\s+/g, " ").trim());
+    const table = tr.closest("table");
+    const headers = table
+      ? Array.from(table.querySelectorAll("th")).map(th => (th.innerText || "").replace(/\s+/g, " ").trim())
+      : [];
+    const orderIndex = headers.findIndex(header => /工单号|工单编号|任务单号|单号/.test(header));
+    const orderNoFromColumn = orderIndex >= 0 ? cellTexts[orderIndex] : "";
+    const orderNoMatch = `${orderNoFromColumn} ${text}`.match(/\b[A-Za-z]*\d{6,}[A-Za-z0-9_-]*\b/);
 
-  return rows.map(row => {
-    const range = parseRangeFromTitle(row.text, new Date().getFullYear());
     return {
-      index: row.index,
-      title: row.text.replace(/\s+/g, " ").trim(),
-      range
+      visibleIndex,
+      text,
+      orderNo: orderNoMatch ? orderNoMatch[0] : "",
+      cellCount: tr.querySelectorAll("td").length,
+      hasHeaderCell: Boolean(tr.querySelector("th"))
     };
-  }).filter(row => row.range);
+  }).filter(row => {
+    if (!row.text || row.text.length < 8) return false;
+    if (row.hasHeaderCell || row.cellCount < 2) return false;
+    if (/工时日期|审核状态|工作说明/.test(row.text)) return false;
+    return true;
+  }));
+
+  const seen = new Set();
+  const occurrences = new Map();
+  return rows.map(row => {
+    const identity = row.orderNo || row.text;
+    const occurrence = occurrences.get(identity) || 0;
+    occurrences.set(identity, occurrence + 1);
+    return { ...row, occurrence };
+  }).filter(row => {
+    const key = row.orderNo || `${row.text}#${row.occurrence}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(row => ({
+    visibleIndex: row.visibleIndex,
+    occurrence: row.occurrence,
+    orderNo: row.orderNo,
+    title: row.text,
+    range: parseRangeFromTitle(row.text, new Date().getFullYear())
+  }));
 }
 
 async function selectSheetByTitle(page, sheet) {
+  if (sheet.orderNo) {
+    const byOrderNo = page.locator("tr:visible").filter({ hasText: sheet.orderNo }).first();
+    if (await byOrderNo.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await byOrderNo.click();
+      await page.waitForTimeout(800);
+      return;
+    }
+  }
+
   const titlePart = sheet.title.match(/[\u4e00-\u9fa5A-Za-z]+\s*\d{4}\s*[-~至]\s*\d{4}/);
-  const targetText = titlePart ? titlePart[0] : sheet.title.slice(0, 20);
-  await page.getByText(targetText, { exact: false }).first().click();
+  const targetText = titlePart ? titlePart[0] : sheet.title.slice(0, 40);
+  const matchingRows = page.locator("tr:visible").filter({ hasText: targetText });
+  const stableRow = matchingRows.nth(sheet.occurrence || 0);
+
+  if (await stableRow.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await stableRow.click();
+    await page.waitForTimeout(800);
+    return;
+  }
+
+  const visibleRow = page.locator("tr:visible").nth(sheet.visibleIndex);
+  if (await visibleRow.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await visibleRow.click();
+    await page.waitForTimeout(800);
+    return;
+  }
+
+  await page.getByText(targetText, { exact: false }).nth(sheet.occurrence || 0).click();
   await page.waitForTimeout(800);
 }
 
@@ -359,7 +412,7 @@ async function existingTimesheetDates(page) {
   const dates = await page.locator("table:visible").evaluateAll(tables => {
     const timesheetTable = tables.find(table => {
       const text = table.innerText || "";
-      return text.includes("工时日期") && text.includes("工时") && text.includes("审核状态");
+      return text.includes("工时日期") && text.includes("工时") && text.includes("工作说明");
     });
 
     if (!timesheetTable) return [];
@@ -374,13 +427,83 @@ async function existingTimesheetDates(page) {
 }
 
 async function openNewTimesheetDialog(page, log) {
-  log("打开新增项目任务工时弹窗。");
+  log("打开新增任务工时弹窗。");
   await page.locator("#button-new:visible, button:visible").filter({ hasText: /^新增$/ }).last().click();
-  await page.getByText("新增项目任务工时", { exact: false }).waitFor({ state: "visible", timeout: 15000 });
+  await page.getByText(/新增.*任务工时/, { exact: false }).waitFor({ state: "visible", timeout: 15000 });
 }
 
 function activeDialog(page) {
   return page.locator(".ui-dialog:visible, .el-dialog:visible, .modal:visible, [role='dialog']:visible").last();
+}
+
+async function readDialogHoursValue(page, label, selectors) {
+  const scope = activeDialog(page);
+  await scope.waitFor({ state: "visible", timeout: 10000 });
+
+  const readInput = async () => {
+    const inputs = [
+      scope.locator(selectors).first(),
+      scope.locator(`xpath=.//label[contains(normalize-space(.), ${JSON.stringify(label)})]/following::input[not(@type='hidden')][1]`).first()
+    ];
+
+    for (const input of inputs) {
+      if (!(await input.count().catch(() => 0))) continue;
+
+      const value = await input.evaluate(element => {
+        const candidates = [
+          element.value,
+          element.defaultValue,
+          element.getAttribute("value"),
+          element.getAttribute("title"),
+          element.getAttribute("data-value")
+        ];
+        const raw = candidates.find(item => item && /\d/.test(item));
+        return raw ? Number(String(raw).match(/\d+(?:\.\d+)?/)?.[0]) : null;
+      }).catch(() => null);
+
+      if (Number.isFinite(value)) return value;
+    }
+
+    return null;
+  };
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10000) {
+    const value = await readInput();
+    if (Number.isFinite(value)) return value;
+    await page.waitForTimeout(500);
+  }
+
+  const dialogText = await scope.innerText().catch(() => "");
+  const diagnostic = dialogText.replace(/\s+/g, " ").slice(0, 300);
+  if (diagnostic) {
+    throw new Error(`新增任务工时弹窗中未读到“${label}”的数值。当前弹窗文本片段：${diagnostic}`);
+  }
+
+  throw new Error(`新增任务工时弹窗中未读到“${label}”的数值。`);
+}
+
+async function readDialogTotalHours(page) {
+  return readDialogHoursValue(page, "总工时", "#totalHours, input[name='totalHours']");
+}
+
+async function closeActiveDialog(page) {
+  const scope = activeDialog(page);
+  if (!(await scope.isVisible({ timeout: 500 }).catch(() => false))) return;
+
+  const closeTargets = [
+    scope.locator(".ui-dialog-titlebar-close, .el-dialog__headerbtn, button.close").last(),
+    scope.locator("button").filter({ hasText: /^取消$/ }).last(),
+    scope.locator("button").filter({ hasText: /^关闭$/ }).last()
+  ];
+
+  for (const target of closeTargets) {
+    if (await target.isVisible({ timeout: 500 }).catch(() => false)) {
+      await target.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(500);
+      return;
+    }
+  }
 }
 
 async function clickButtonInScope(scope, name, selector) {
@@ -392,13 +515,29 @@ async function clickButtonInScope(scope, name, selector) {
 }
 
 async function setTimesheetDate(page, scope, date) {
-  const input = scope.locator(
-    "xpath=.//*[contains(normalize-space(.), '工时日期')]/following::input[not(@type='hidden')][1]"
-  ).first();
-  await input.waitFor({ state: "attached", timeout: 10000 });
+  const inputs = [
+    scope.locator("xpath=.//label[contains(normalize-space(.), '工时日期')]/following::input[not(@type='hidden')][1]").last(),
+    scope.locator("xpath=.//*[contains(normalize-space(.), '工时日期')]/following::input[not(@type='hidden')][1]").last(),
+    scope.locator("input:visible[id*='date' i], input:visible[name*='date' i]").last()
+  ];
+  let input = null;
+
+  for (const candidate of inputs) {
+    if (await candidate.isVisible({ timeout: 1200 }).catch(() => false)) {
+      input = candidate;
+      break;
+    }
+  }
+
+  if (!input) {
+    throw new Error("未找到可填写的工时日期输入框。");
+  }
+
   await input.scrollIntoViewIfNeeded().catch(() => {});
   await input.click({ force: true, timeout: 1500 }).catch(() => {});
-  await input.fill(date, { timeout: 1500 }).catch(() => {});
+  const filledDirectly = await input.fill(date, { timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
   await input.evaluate((element, nextValue) => {
     element.value = nextValue;
     element.dispatchEvent(new Event("input", { bubbles: true }));
@@ -407,7 +546,7 @@ async function setTimesheetDate(page, scope, date) {
 
   const [, , day] = date.split("-");
   const picker = page.locator(".datetimepicker.datetimepicker-dropdown.dropdown-menu:visible, .datetimepicker-dropdown:visible").last();
-  if (await picker.isVisible({ timeout: 800 }).catch(() => false)) {
+  if (!filledDirectly || await picker.isVisible({ timeout: 800 }).catch(() => false)) {
     const dayCell = picker.locator("td.day:not(.old):not(.new), span.day").filter({
       hasText: new RegExp(`^\\s*${Number(day)}\\s*$`)
     }).first();
@@ -415,6 +554,21 @@ async function setTimesheetDate(page, scope, date) {
       await dayCell.click({ force: true, timeout: 1000 }).catch(() => {});
     }
   }
+}
+
+async function fillInputAfterLabel(scope, label, value) {
+  const input = scope.locator(
+    `xpath=.//label[contains(normalize-space(.), ${JSON.stringify(label)})]/following::input[not(@type='hidden')][1]`
+  ).last();
+  await fillFirstVisible(input, value);
+}
+
+async function fillDescription(scope, value) {
+  const textarea = scope.locator(
+    "xpath=.//label[contains(normalize-space(.), '工作说明')]/following::textarea[1]"
+  ).last();
+  await textarea.waitFor({ state: "visible", timeout: 10000 });
+  await textarea.fill(value);
 }
 
 async function setTravelCheckbox(scope, log) {
@@ -450,15 +604,8 @@ async function addOneDate(page, date, config, log) {
 
   await setTimesheetDate(page, scope, date);
 
-  const label = config.category;
-  const categoryInput = scope.locator(
-    `xpath=.//*[contains(normalize-space(.), ${JSON.stringify(label)})]/following::input[not(@type='hidden')][1]`
-  );
-  await fillFirstVisible(categoryInput, config.hours);
-
-  const description = scope.locator("textarea").last();
-  await description.waitFor({ state: "visible", timeout: 10000 });
-  await description.fill(config.workDescription);
+  await fillInputAfterLabel(scope, config.category, config.hours);
+  await fillDescription(scope, config.workDescription);
 
   if (config.isTravel) {
     await setTravelCheckbox(scope, log);
@@ -480,6 +627,15 @@ async function submitSheet(page, log) {
   if (await confirm.count()) await confirm.click();
 }
 
+function removePendingDate(pendingDates, date) {
+  const index = pendingDates.indexOf(date);
+  if (index !== -1) pendingDates.splice(index, 1);
+}
+
+function recordFilledDate(filledDates, date) {
+  if (!filledDates.includes(date)) filledDates.push(date);
+}
+
 async function runZmpAutomation(rawConfig, log = () => {}) {
   const config = await normalizeConfig(rawConfig);
   const plan = buildPlanFromNormalized(rawConfig, config);
@@ -489,11 +645,6 @@ async function runZmpAutomation(rawConfig, log = () => {}) {
     skipped: [],
     failed: []
   };
-
-  if (config.dryRun) {
-    log("当前是预演模式，不会打开浏览器或写入 ZMP。");
-    return result;
-  }
 
   const { chromium } = await requirePlaywright();
   const context = await chromium.launchPersistentContext(config.userDataDir, {
@@ -508,53 +659,78 @@ async function runZmpAutomation(rawConfig, log = () => {}) {
     await ensureWaitingQuery(taskPage, log);
 
     const sheets = await readSheetRows(taskPage);
-    log(`识别到 ${sheets.length} 张带日期范围的工时单。`);
+    log(`识别到 ${sheets.length} 张待处理工时单。`);
 
-    const matchedDates = new Set();
-    for (const date of plan.dates) {
-      const matchedSheet = sheets.find(sheet => dateInRange(date, sheet.range));
-      if (matchedSheet) {
-        matchedDates.add(date);
-      } else {
-        result.skipped.push({ date, reason: "不在当前工时单日期范围内" });
-        log(`跳过 ${date}：不在当前可处理工时单日期范围内。`);
-      }
-    }
+    const pendingDates = [...plan.dates];
+    const filledDates = [];
 
     for (const sheet of sheets) {
-      const sheetDates = plan.dates.filter(date => matchedDates.has(date) && dateInRange(date, sheet.range));
-      if (!sheetDates.length) continue;
+      if (!pendingDates.length) break;
 
-      log(`处理工时单：${sheet.range.start} 至 ${sheet.range.end}，共 ${sheetDates.length} 天。`);
+      const sheetName = sheet.range
+        ? `${sheet.range.start} 至 ${sheet.range.end}`
+        : sheet.title.slice(0, 80);
+      log(`处理工时单：${sheetName}。当前待填 ${pendingDates.length} 天：${pendingDates.join("、")}。`);
       await selectSheetByTitle(taskPage, sheet);
       const existing = await existingTimesheetDates(taskPage);
       await openNewTimesheetDialog(taskPage, log);
 
+      const totalHours = await readDialogTotalHours(taskPage);
+      const sheetDateCount = Math.floor(totalHours / config.hours);
+      log(`弹窗总工时 ${totalHours}，每天 ${config.hours} 小时；当前工时单需要填写 ${sheetDateCount} 个日期。`);
+
+      for (const date of [...pendingDates]) {
+        if (!existing.has(date)) continue;
+        result.skipped.push({ date, reason: "已存在", sheet: sheetName });
+        recordFilledDate(filledDates, date);
+        removePendingDate(pendingDates, date);
+        log(`跳过 ${date}：当前工时单已有工时记录。剩余待填 ${pendingDates.length} 天。`);
+      }
+
+      if (sheetDateCount <= 0) {
+        log("当前工时单按总工时计算无需新增日期，切换下一张工时单。");
+        await closeActiveDialog(taskPage);
+        continue;
+      }
+
       let filledThisSheet = 0;
 
-      for (const date of sheetDates) {
-        if (existing.has(date)) {
-          result.skipped.push({ date, reason: "已存在" });
-          log(`跳过 ${date}：页面已有工时记录。`);
-          continue;
-        }
-
+      while (pendingDates.length && filledThisSheet < sheetDateCount) {
+        const date = pendingDates[0];
         try {
           await addOneDate(taskPage, date, config, log);
           await saveDialog(taskPage, log, date);
           existing.add(date);
+          recordFilledDate(filledDates, date);
+          removePendingDate(pendingDates, date);
           filledThisSheet += 1;
-          result.filled.push({ date, hours: config.hours, sheet: `${sheet.range.start}~${sheet.range.end}` });
+          result.filled.push({ date, hours: config.hours, sheet: sheetName, totalHours });
+          log(`${date} 已保存。当前工时单已填 ${filledThisSheet}/${sheetDateCount} 个日期；未填日期：${pendingDates.join("、") || "无"}。`);
         } catch (error) {
-          result.failed.push({ date, error: error.message });
-          log(`填写 ${date} 失败：${error.message}`);
+          result.failed.push({ date, sheet: sheetName, error: error.message });
+          log(`填写 ${date} 失败，保留在未填列表，停止当前工时单以避免后续日期错位：${error.message}`);
+          break;
         }
       }
 
-      if (config.submitAfterEachSheet && filledThisSheet > 0) {
-        log("本工时单最后一条工时已保存，执行自动提交。");
-        await submitSheet(taskPage, log);
+      if (filledThisSheet > 0) {
+        if (filledThisSheet >= sheetDateCount) {
+          log("当前工时单已按总工时填满日期，执行自动提交。");
+          await submitSheet(taskPage, log);
+        } else {
+          log(`当前工时单只填了 ${filledThisSheet}/${sheetDateCount} 个日期，暂不提交。`);
+          await closeActiveDialog(taskPage);
+        }
+      } else {
+        await closeActiveDialog(taskPage);
       }
+    }
+
+    if (pendingDates.length) {
+      for (const date of pendingDates) {
+        result.skipped.push({ date, reason: "没有足够的工时单容量" });
+      }
+      log(`所有工时单处理完成后仍有日期未填写：${pendingDates.join("、")}。`);
     }
   } finally {
     log("自动化流程结束，浏览器保留数秒供你确认页面状态。");

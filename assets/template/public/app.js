@@ -65,9 +65,7 @@ function collectConfig() {
     workDescription: document.querySelector("#workDescription").value.trim(),
     isTravel: document.querySelector("#isTravel").checked,
     loginWaitMs: Number(document.querySelector("#loginWaitSeconds").value || 12) * 1000,
-    stepWaitMs: Number(document.querySelector("#stepWaitSeconds").value || 1.2) * 1000,
-    submitAfterEachSheet: true,
-    dryRun: false
+    stepWaitMs: Number(document.querySelector("#stepWaitSeconds").value || 1.2) * 1000
   };
 }
 
