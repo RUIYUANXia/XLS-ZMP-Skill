@@ -4,6 +4,18 @@ const { resolveDatesFromRequest } = require("./workCalendar");
 
 const ZMP_URL = "https://zmp.iwhalecloud.com/newZmp#/";
 const DEFAULT_CATEGORY = "升级/测试/业务操作";
+const VALID_CATEGORIES = [
+  "服务台/监控",
+  "投诉/问题排查&处理",
+  "升级/测试/业务操作",
+  "培训",
+  "部署/配置",
+  "日常维护/数据治理",
+  "故障/软硬件BUG处理",
+  "需求调研",
+  "管理和沟通",
+  "割接对账"
+];
 
 function formatDate(date) {
   const year = date.getFullYear();
@@ -15,13 +27,17 @@ function formatDate(date) {
 async function normalizeConfig(config) {
   const requestedDates = await resolveDatesFromRequest(config);
   const selectedDates = [...new Set(config.selectedDates?.length ? config.selectedDates : requestedDates?.dates || [])].sort();
+  const category = config.category || DEFAULT_CATEGORY;
+  if (!VALID_CATEGORIES.includes(category)) {
+    throw new Error(`工时类型只能是：${VALID_CATEGORIES.join("、")}。当前值：${category}`);
+  }
   return {
     url: config.url || ZMP_URL,
     selectedDates,
     requestedDates,
     hours: Number(config.hours || 8),
     workDescription: config.workDescription || "日常维护支持",
-    category: config.category || DEFAULT_CATEGORY,
+    category,
     isTravel: Boolean(config.isTravel),
     loginWaitMs: Number(config.loginWaitMs || 12000),
     stepWaitMs: Number(config.stepWaitMs || 1200),
